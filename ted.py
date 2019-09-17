@@ -27,11 +27,14 @@ import sys
 import time
 import urllib.request
 import xml.etree.ElementTree as ET
+from base64 import b64encode
 from packaging import version
 
 def main(argv):
     #set up the config files to scan
     configs = []
+    ossindexKey = ""
+    ossindexUser = ""
     if len(argv) <= 1:
         print("Usage:")
         print(argv[0] + " [path(s) to packages.config] 2> output.csv")
@@ -87,6 +90,7 @@ def main(argv):
             print("Found " + package.attrib['id'] + "-" + package.attrib['version'])
             response = urllib.request.urlopen("https://azuresearch-usnc.nuget.org/query?q=packageid:" + package.attrib['id'])
             data = json.loads(response.read())
+            time.sleep(1)
 
             if 'data' not in data:
                 print("\tError contacting nuget.")
@@ -99,7 +103,11 @@ def main(argv):
                 sys.stderr.write("SV-85017r2_rule,Confirmed,Proof of Concept,None,The latest version of " + package.attrib['id'] + " is " + data['data'][0]['version'] + " but " + package.attrib['version'] + " is installed.,Ted," + y + "\n")
 
             #check OSS Index
-            response = urllib.request.urlopen("https://ossindex.sonatype.org/api/v3/component-report/pkg:nuget/" + package.attrib['id'] + "@" + package.attrib['version'], context=ssl._create_unverified_context())
+            req = urllib.request
+            if (len(ossindexKey) > 0) and (len(ossindexUser) > 0):
+                basicAuth = b64encode(ossindexUser + ":" + ossindexKey).decode("ascii")
+                req.add_header("authorization", "Basic " + basicAuth)
+            response = req.urlopen("https://ossindex.sonatype.org/api/v3/component-report/pkg:nuget/" + package.attrib['id'] + "@" + package.attrib['version'], context=ssl._create_unverified_context())
             data = json.loads(response.read())
             printedCves = []
             for vuln in data['vulnerabilities']:
