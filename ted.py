@@ -103,11 +103,11 @@ def main(argv):
                 sys.stderr.write("SV-85017r2_rule,Confirmed,Proof of Concept,None,The latest version of " + package.attrib['id'] + " is " + data['data'][0]['version'] + " but " + package.attrib['version'] + " is installed.,Ted," + y + "\n")
 
             #check OSS Index
-            req = urllib.request
+            req = urllib.request.Request("https://ossindex.sonatype.org/api/v3/component-report/pkg:nuget/" + package.attrib['id'] + "@" + package.attrib['version'])
             if (len(ossindexKey) > 0) and (len(ossindexUser) > 0):
-                basicAuth = b64encode(ossindexUser + ":" + ossindexKey).decode("ascii")
+                basicAuth = b64encode((ossindexUser + ":" + ossindexKey).encode()).decode("ascii")
                 req.add_header("authorization", "Basic " + basicAuth)
-            response = req.urlopen("https://ossindex.sonatype.org/api/v3/component-report/pkg:nuget/" + package.attrib['id'] + "@" + package.attrib['version'], context=ssl._create_unverified_context())
+            response = urllib.request.urlopen(req, context=ssl._create_unverified_context())
             data = json.loads(response.read())
             printedCves = []
             for vuln in data['vulnerabilities']:
