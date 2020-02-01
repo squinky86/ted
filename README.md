@@ -4,7 +4,10 @@ Ted NuGet (Testing External Dependencies in NuGet) performs open sources checks 
 
 ## Installation
 
-Run it as a Python3 script, and direct the stderr to a CSV file.
+Run it as a Python3 script.
+
+Usage: py ted.py [options] <path>
+For help use "-h" flag.
 
 ## Authors
 

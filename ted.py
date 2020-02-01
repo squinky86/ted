@@ -18,32 +18,62 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+import argparse
 import datetime
 import gzip
 import json
 import os.path
-import ssl
 import sys
 import time
-import urllib.request
+import requests
+import urllib3
 import xml.etree.ElementTree as ET
 from base64 import b64encode
 from packaging import version
+from pathlib import Path
 
-def main(argv):
-    #set up the config files to scan
-    configs = []
+def main():
+    nuget_url = "https://azuresearch-usnc.nuget.org/query?q=packageid:{}"
+    nvd_url = "https://nvd.nist.gov/feeds/json/cve/1.0/nvdcve-1.0-{}.json.gz"
+    ossindex_url = "https://ossindex.sonatype.org/api/v3/component-report/pkg:nuget/{}@{}"
+    
     ossindexKey = ""
     ossindexUser = ""
-    if len(argv) <= 1:
-        print("Usage:")
-        print(argv[0] + " [path(s) to packages.config] 2> output.csv")
-        return
-    for x in argv[1:]:
-        if (os.path.exists(x)):
-            configs.append(x)
+    
+    parser = argparse.ArgumentParser(usage='%(prog)s [options] path', description='Ted. NuGet package vulnerability checker.')
+
+    parser.version = "0.1"
+    parser.add_argument("Path", metavar="path", type=str, help="the path to the packages.config file, or the directory to search if the -r flag is used.")
+    parser.add_argument("-o", "--output", required=True, type=str, help="Output file location.")
+    parser.add_argument("--no-ssl", action="store_true", dest="no_ssl_verify", help="Verify SSL. Turn off ssl verification. Useful if there are certification issues.")
+    parser.add_argument("-r", "-R", "--recursive", action="store_true", dest="recursive", help="Recursively searches directory for all packages.config files.")
+    parser.add_argument("-v", action="version")
+
+    args = parser.parse_args()
+    input = args.Path
+    output = args.output
+    recursive = args.recursive
+    no_ssl_verify = args.no_ssl_verify
+    
+    req_session = requests.Session()
+    
+    if no_ssl_verify:
+        req_session.verify = False
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    
+    #set up the config files to scan
+    configs = []
+    
+    if not os.path.exists(input):
+        print("The supplied path does not exist: {}".format(input))
+    else:
+        if recursive:
+            print("Recursively searching {} for all packages.config files:".format(input))
+            for filename in Path(input).rglob('packages.config'):
+                print("\t{}".format(filename))
+                configs.append(filename)
         else:
-            print("File '" + x + "' does not exist.")
+            configs.append(input)
 
     #build a dictionary of CVEs
     cves = {}
@@ -62,67 +92,101 @@ def main(argv):
                 os.remove(y + ".json")
         if not os.path.exists(y + ".json"):
             print("Downloading NVD for " + y)
-            response = urllib.request.urlopen("https://nvd.nist.gov/feeds/json/cve/1.0/nvdcve-1.0-" + y + ".json.gz")
+            response = req_session.get(nvd_url.format(y))
+            print(response.status_code)
+            print(response.headers['content-type'])
+            print(response.encoding)
             f = open(y + ".json", "wb")
-            f.write(gzip.decompress(response.read()))
+            f.write(gzip.decompress(response.content))
             f.close()
         if os.path.exists(y + ".json"):
-            with open(y + ".json") as jsonFile:
-                data = json.load(jsonFile)
-                for cve in data['CVE_Items']:
-                    cveId = cve['cve']['CVE_data_meta']['ID']
-                    for products in cve['cve']['affects']['vendor']['vendor_data']:
-                        for product in products['product']['product_data']:
-                            for versionStr in product['version']['version_data']:
-                                if cveId not in cves:
-                                    cves[cveId] = {}
-                                if product['product_name'] not in cves[cveId]:
-                                    cves[cveId][product['product_name']] = []
-                                cves[cveId][product['product_name']].append(versionStr['version_affected'] + versionStr['version_value'])
-
-    sys.stderr.write("CWE/CVE/STIG,Confidence,Exploit Maturity,Mitigations,Comments,Tool,File\n")
-
+            print("Loading CVE data for {}".format(y))
+            try:
+                with open(y + ".json") as jsonFile:
+                    data = json.load(jsonFile)
+                    for cve in data['CVE_Items']:
+                        cveId = cve['cve']['CVE_data_meta']['ID']
+                        for products in cve['cve']['affects']['vendor']['vendor_data']:
+                            for product in products['product']['product_data']:
+                                for versionStr in product['version']['version_data']:
+                                    if cveId not in cves:
+                                        cves[cveId] = {}
+                                    if product['product_name'] not in cves[cveId]:
+                                        cves[cveId][product['product_name']] = []
+                                    cves[cveId][product['product_name']].append(versionStr['version_affected'] + versionStr['version_value'])
+            except Exception as e:
+                print("\tERROR loading CVE data for {}".format(y))
+                print("\t{}".format(e))
+       
+    packages = {}
+    
     #loop through each packages.config file provided
-    for y in configs:
-        tree = ET.parse(y)
+    for config in configs:
+        tree = ET.parse(config)
         root = tree.getroot()
         for package in root.findall('./package'):
-            print("Found " + package.attrib['id'] + "-" + package.attrib['version'])
-            response = urllib.request.urlopen("https://azuresearch-usnc.nuget.org/query?q=packageid:" + package.attrib['id'])
-            data = json.loads(response.read())
+            key = package.attrib['id'] + "@" + package.attrib['version']
+            if key in packages:
+                packages[key].append(str(config))
+            else:
+                packages[key] = [str(config)]
+    
+    print("Checking packages for vulnerabilities")
+    with open(output, 'w') as out_file:
+        out_file.write("CWE/CVE/STIG,Confidence,Exploit Maturity,Mitigations,Comments,Tool,File\n")
+     
+        for package in packages:
+            print("Checking {}".format(package))
+            package_id = package.split('@')[0]
+            package_version = package.split('@')[1]
+            loc = "|".join(packages[package])
+            response = req_session.get(nuget_url.format(package_id))
+            data = response.json()
             time.sleep(1)
 
             if 'data' not in data:
-                print("\tError contacting nuget.")
+                print("\tERROR contacting nuget.")
                 continue
             if len(data['data']) < 1:
-                print("\tNot found in nuget.")
                 continue
-            print("\tCurrent version is " + data['data'][0]['version'])
-            if package.attrib['version'] != data['data'][0]['version']:
-                sys.stderr.write("SV-85017r2_rule,Confirmed,Proof of Concept,None,The latest version of " + package.attrib['id'] + " is " + data['data'][0]['version'] + " but " + package.attrib['version'] + " is installed.,Ted," + y + "\n")
+            print("\tCurrent version is {}. Checking OSS Index...".format(data['data'][0]['version']))
+            if package_version != data['data'][0]['version']:
+                out_file.write("SV-85017r2_rule,Confirmed,Proof of Concept,None,The latest version of {} is {} but {} is installed.,Ted,{}\n".format( 
+                package_id,
+                data['data'][0]['version'],
+                package_version,
+                loc))
 
             #check OSS Index
-            req = urllib.request.Request("https://ossindex.sonatype.org/api/v3/component-report/pkg:nuget/" + package.attrib['id'] + "@" + package.attrib['version'])
+            formatted_ossindex_url = ossindex_url.format(package_id, package_version)
             if (len(ossindexKey) > 0) and (len(ossindexUser) > 0):
-                basicAuth = b64encode((ossindexUser + ":" + ossindexKey).encode()).decode("ascii")
-                req.add_header("authorization", "Basic " + basicAuth)
-            response = urllib.request.urlopen(req, context=ssl._create_unverified_context())
-            data = json.loads(response.read())
+                response = req_session.get(formatted_ossindex_url, auth=(ossindexUser, ossindexKey))
+            else:
+                response = req_session.get(formatted_ossindex_url)
+            data = response.json()
             printedCves = []
             for vuln in data['vulnerabilities']:
                 if 'cve' in vuln:
                     #CVE found
-                    sys.stderr.write(vuln['cve'] + ",Confirmed,High,None," + vuln['title'].replace(',', '') + " (" + vuln['reference'] + "),Ted," + y + "\n")
+                    col1 = vuln['cve']
                     printedCves.append(vuln['cve'])
+                elif 'cwe' in vuln:
+                    col1 = vuln['cwe']
                 else:
-                    sys.stderr.write(vuln['cwe'] + ",Confirmed,High,None," + vuln['title'].replace(',', '') + " (" + vuln['reference'] + "),Ted," + y + "\n")
+                    col1 = ''
+                
+                out_file.write("{},Confirmed,High,None,{} ({}),Ted,{},\n".format(
+                col1,
+                vuln['title'].replace(',', ''),
+                vuln['reference'],
+                loc))
+                print("\tVunerability found: {} {} {}".format(col1, vuln['title'].replace(',', ''), vuln['reference'], loc))
 
             #print out each CVE that was found against the product
             markedCves = []
             for cve in cves:
                 for product in cves[cve]:
-                    if product == package.attrib['id'].lower():
+                    if product == package_id.lower():
                         versions = cves[cve][product]
                         for versionStr in versions:
                             versionToTest = versionStr[1:]
@@ -131,23 +195,29 @@ def main(argv):
                                 versionComparison = versionComparison + "="
                                 versionToTest = versionToTest[1:]
                             if versionComparison == "<":
-                                if (version.parse(package.attrib['version']) < version.parse(versionToTest)):
+                                if (version.parse(package_version) < version.parse(versionToTest)):
                                     markedCves.append(cve)
                                     break
                             if versionComparison == "<=":
-                                if (version.parse(package.attrib['version']) <= version.parse(versionToTest)):
+                                if (version.parse(package_version) <= version.parse(versionToTest)):
                                     markedCves.append(cve)
                                     break
                             elif (versionComparison == "="):
-                                if (version.parse(package.attrib['version']) == version.parse(versionToTest)):
+                                if (version.parse(package_version) == version.parse(versionToTest)):
                                     markedCves.append(cve)
                                     break
             for markedCve in markedCves:
                 if markedCve in printedCves:
                     continue
                 printedCves.append(markedCve)
-                sys.stderr.write(markedCve + ",Confirmed,High,None," + markedCve + " contains known vulnerability information against " + package.attrib['id'] + " " + package.attrib['version'] + ".,Ted," + y + "\n")
-
+                out_file.write("{},Confirmed,High,None,{} contains known vulnerability information against {} {}.,Ted,{}\n".format(
+                markedCve,
+                markedCve,
+                package_id,
+                package_version,
+                loc))
+    
+    print("Finished writing vulnerabilities to {}".format(output))
 
 if __name__== "__main__":
-    main(sys.argv)
+    main()
