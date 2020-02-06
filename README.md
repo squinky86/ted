@@ -9,9 +9,10 @@ Run it as a Python3 script.
 Usage: py ted.py [options] <path>
 For help use "-h" flag.
 
-## Authors
+## Authors/Contributers
 
 * Jon Hood (squinky86)
+* crook3dfingers
 
 ## License
 
