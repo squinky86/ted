@@ -34,13 +34,13 @@ from pathlib import Path
 
 def main():
     nuget_url = "https://azuresearch-usnc.nuget.org/query?q=packageid:{}"
-    nvd_url = "https://nvd.nist.gov/feeds/json/cve/1.0/nvdcve-1.0-{}.json.gz"
+    nvd_url = "https://nvd.nist.gov/feeds/json/cve/1.1/nvdcve-1.1-{}.json.gz"
     ossindex_url = "https://ossindex.sonatype.org/api/v3/component-report/pkg:nuget/{}@{}"
     
     ossindexKey = ""
     ossindexUser = ""
     
-    parser = argparse.ArgumentParser(usage='%(prog)s [options] path', description='Ted. NuGet package vulnerability checker.')
+    parser = argparse.ArgumentParser(usage='%(prog)s [-r -o -h -v --no-ssl] path', description='Ted. NuGet package vulnerability checker.')
 
     parser.version = "0.1"
     parser.add_argument("Path", metavar="path", type=str, help="the path to the packages.config file, or the directory to search if the -r flag is used.")
@@ -106,14 +106,19 @@ def main():
                     data = json.load(jsonFile)
                     for cve in data['CVE_Items']:
                         cveId = cve['cve']['CVE_data_meta']['ID']
-                        for products in cve['cve']['affects']['vendor']['vendor_data']:
-                            for product in products['product']['product_data']:
-                                for versionStr in product['version']['version_data']:
+                        for node in cve['configurations']['nodes']:
+                            if 'cpe_match' in node:
+                                for products in node['cpe_match']:
+                                    cpe = products['cpe23Uri'].split(':')
                                     if cveId not in cves:
                                         cves[cveId] = {}
-                                    if product['product_name'] not in cves[cveId]:
-                                        cves[cveId][product['product_name']] = []
-                                    cves[cveId][product['product_name']].append(versionStr['version_affected'] + versionStr['version_value'])
+                                    if cpe[4] not in cves[cveId]:
+                                        cves[cveId][cpe[4]] = []
+                                    affected = "*"
+                                    if 'versionEndIncluding' in cpe:
+                                        cpe[5] = cpe['versionEndIncluding']
+                                        affected = "<="
+                                    cves[cveId][cpe[4]].append(affected + cpe[5])
             except Exception as e:
                 print("\tERROR loading CVE data for {}".format(y))
                 print("\t{}".format(e))
