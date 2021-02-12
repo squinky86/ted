@@ -156,7 +156,7 @@ def main():
                 continue
             print("\tCurrent version is {}. Checking OSS Index...".format(data['data'][0]['version']))
             if package_version != data['data'][0]['version']:
-                out_file.write("SV-85017r2_rule,Confirmed,Proof of Concept,None,The latest version of {} is {} but {} is installed.,Ted,{}\n".format( 
+                out_file.write("SV-222658r508029_rule,Confirmed,Proof of Concept,None,The latest version of {} is {} but {} is installed.,Ted,{}\n".format( 
                 package_id,
                 data['data'][0]['version'],
                 package_version,
