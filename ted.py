@@ -1,7 +1,7 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 
-# Ted 0.0.1
+# Ted 0.0.2
 #
 # Copyright © Jon Hood, http://www.hoodsecurity.com/
 # 
@@ -32,6 +32,50 @@ from base64 import b64encode
 from packaging import version
 from pathlib import Path
 
+def add_to_packages(root, packages, filename, findallText, idtext, versiontext):
+    for package in root.findall(findallText):
+                key = package.attrib[idtext] + "@" + package.attrib[versiontext]
+                if key in packages:
+                    packages[key].append(str(filename))
+                else:
+                    packages[key] = [str(filename)]
+
+def get_package_files(input, recursive, file_type):
+    #set up the config files to scan
+    configs = []
+    
+    if not os.path.exists(input):
+        print("The supplied path does not exist: {}".format(input))
+    else:
+        if recursive:
+            print("Recursively searching {} for all {} files:".format(input, file_type))
+            for filename in Path(input).rglob(file_type):
+                print("\t{}".format(filename))
+                configs.append(filename)
+        else:
+            configs.append(input)
+    
+    return configs
+
+def get_config_packages(input, recursive, packages):
+    configs = get_package_files(input, recursive, 'packages.config')
+    
+    #loop through each packages.config file provided
+    for config in configs:
+        tree = ET.parse(config)
+        root = tree.getroot()
+        add_to_packages(root, packages, config, './package', 'id', 'version')
+
+def get_csproj_packages(input, recursive, packages):
+    csprojs = get_package_files(input, recursive, '*.csproj')
+    
+    #loop through each csproj file provided
+    for csproj in csprojs:
+        tree = ET.parse(csproj)
+        root = tree.getroot()
+        add_to_packages(root, packages, csproj, './ItemGroup/PackageReference/[@version]', 'Include', 'version')
+        add_to_packages(root, packages, csproj, './ItemGroup/PackageReference/[@Version]', 'Include', 'Version')
+
 def main():
     nuget_url = "https://azuresearch-usnc.nuget.org/query?q=packageid:{}"
     nvd_url = "https://nvd.nist.gov/feeds/json/cve/1.1/nvdcve-1.1-{}.json.gz"
@@ -42,7 +86,7 @@ def main():
     
     parser = argparse.ArgumentParser(usage='%(prog)s [-r -o -h -v --no-ssl] path', description='Ted. NuGet package vulnerability checker.')
 
-    parser.version = "0.1"
+    parser.version = "0.0.2"
     parser.add_argument("Path", metavar="path", type=str, help="the path to the packages.config file, or the directory to search if the -r flag is used.")
     parser.add_argument("-o", "--output", required=True, type=str, help="Output file location.")
     parser.add_argument("--no-ssl", action="store_true", dest="no_ssl_verify", help="Verify SSL. Turn off ssl verification. Useful if there are certification issues.")
@@ -60,20 +104,6 @@ def main():
     if no_ssl_verify:
         req_session.verify = False
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-    
-    #set up the config files to scan
-    configs = []
-    
-    if not os.path.exists(input):
-        print("The supplied path does not exist: {}".format(input))
-    else:
-        if recursive:
-            print("Recursively searching {} for all packages.config files:".format(input))
-            for filename in Path(input).rglob('packages.config'):
-                print("\t{}".format(filename))
-                configs.append(filename)
-        else:
-            configs.append(input)
 
     #build a dictionary of CVEs
     cves = {}
@@ -102,7 +132,7 @@ def main():
         if os.path.exists(y + ".json"):
             print("Loading CVE data for {}".format(y))
             try:
-                with open(y + ".json") as jsonFile:
+                with open(y + ".json", encoding='utf-8') as jsonFile:
                     data = json.load(jsonFile)
                     for cve in data['CVE_Items']:
                         cveId = cve['cve']['CVE_data_meta']['ID']
@@ -122,19 +152,10 @@ def main():
             except Exception as e:
                 print("\tERROR loading CVE data for {}".format(y))
                 print("\t{}".format(e))
-       
+
     packages = {}
-    
-    #loop through each packages.config file provided
-    for config in configs:
-        tree = ET.parse(config)
-        root = tree.getroot()
-        for package in root.findall('./package'):
-            key = package.attrib['id'] + "@" + package.attrib['version']
-            if key in packages:
-                packages[key].append(str(config))
-            else:
-                packages[key] = [str(config)]
+    get_config_packages(input, recursive, packages)
+    get_csproj_packages(input, recursive, packages)
     
     print("Checking packages for vulnerabilities")
     with open(output, 'w') as out_file:
