@@ -19,6 +19,7 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 import argparse
+import csv
 import datetime
 import gzip
 import json
@@ -43,10 +44,11 @@ def main():
     parser = argparse.ArgumentParser(usage='%(prog)s [-r -o -h -v --no-ssl] path', description='Ted. NuGet package vulnerability checker.')
 
     parser.version = "0.1"
-    parser.add_argument("Path", metavar="path", type=str, help="the path to the packages.config file, or the directory to search if the -r flag is used.")
+    parser.add_argument("Path", metavar="path", type=str, help="the path to the packages.config file, csv file (--csv flag), or the directory to search (-r flag).")
     parser.add_argument("-o", "--output", required=True, type=str, help="Output file location.")
     parser.add_argument("--no-ssl", action="store_true", dest="no_ssl_verify", help="Verify SSL. Turn off ssl verification. Useful if there are certification issues.")
     parser.add_argument("-r", "-R", "--recursive", action="store_true", dest="recursive", help="Recursively searches directory for all packages.config files.")
+    parser.add_argument("--csv", action="store_true", help="Pass a csv file of package names and versions to use instead of pulling them from packages.config or dll/exe files. Useful for running against offline code bases.")
     parser.add_argument("-v", action="version")
 
     args = parser.parse_args()
@@ -54,6 +56,7 @@ def main():
     output = args.output
     recursive = args.recursive
     no_ssl_verify = args.no_ssl_verify
+    use_csv = args.csv
     
     req_session = requests.Session()
     
@@ -67,13 +70,15 @@ def main():
     if not os.path.exists(input):
         print("The supplied path does not exist: {}".format(input))
     else:
-        if recursive:
-            print("Recursively searching {} for all packages.config files:".format(input))
-            for filename in Path(input).rglob('packages.config'):
-                print("\t{}".format(filename))
-                configs.append(filename)
-        else:
-            configs.append(input)
+        if not use_csv:
+            #if use_csv is true, then we won't come in here since we're not using config files
+            if recursive:
+                print("Recursively searching {} for all packages.config files:".format(input))
+                for filename in Path(input).rglob('packages.config'):
+                    print("\t{}".format(filename))
+                    configs.append(filename)
+            else:
+                configs.append(input)
 
     #build a dictionary of CVEs
     cves = {}
@@ -124,17 +129,39 @@ def main():
                 print("\t{}".format(e))
        
     packages = {}
-    
-    #loop through each packages.config file provided
-    for config in configs:
-        tree = ET.parse(config)
-        root = tree.getroot()
-        for package in root.findall('./package'):
-            key = package.attrib['id'] + "@" + package.attrib['version']
-            if key in packages:
-                packages[key].append(str(config))
-            else:
-                packages[key] = [str(config)]
+
+    if use_csv:
+        #process csv file to build packages list
+        with open(input, 'r') as csvfile:
+            csvreader = csv.reader(csvfile)
+
+            #Get column count, and also skip first row since it is header.
+            numcols = len(next(csvreader))
+
+            for row in csvreader:
+                if numcols == 2:
+                    #csv should be name,version
+                    key = row[0] + "@" + row[1]
+                    if key not in packages:
+                        packages[key] = ["n/a"]
+                else:
+                    #csv should be name,version,location
+                    key = row[0] + "@" + row[1]
+                    if key in packages:
+                        packages[key].append(row[2])
+                    else:
+                        packages[key] = [row[2]]
+    else :
+        #loop through each packages.config file provided
+        for config in configs:
+            tree = ET.parse(config)
+            root = tree.getroot()
+            for package in root.findall('./package'):
+                key = package.attrib['id'] + "@" + package.attrib['version']
+                if key in packages:
+                    packages[key].append(str(config))
+                else:
+                    packages[key] = [str(config)]
     
     print("Checking packages for vulnerabilities")
     with open(output, 'w') as out_file:
