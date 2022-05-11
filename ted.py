@@ -24,12 +24,10 @@ import datetime
 import gzip
 import json
 import os.path
-import sys
 import time
 import requests
 import urllib3
 import xml.etree.ElementTree as ET
-from base64 import b64encode
 from packaging import version
 from pathlib import Path
 
@@ -57,6 +55,31 @@ def get_package_files(input, recursive, file_type):
             configs.append(input)
     
     return configs
+
+def get_csv_packages(input, packages):
+    if not os.path.exists(input):
+        print("The supplied path does not exist: {}".format(input))
+    else:
+        #process csv file to build packages list
+        with open(input, 'r') as csvfile:
+            csvreader = csv.reader(csvfile)
+
+            #Get column count, and also skip first row since it is header.
+            numcols = len(next(csvreader))
+
+            for row in csvreader:
+                if numcols == 2:
+                    #csv should be name,version
+                    key = row[0] + "@" + row[1]
+                    if key not in packages:
+                        packages[key] = ["n/a"]
+                else:
+                    #csv should be name,version,location
+                    key = row[0] + "@" + row[1]
+                    if key in packages:
+                        packages[key].append(row[2])
+                    else:
+                        packages[key] = [row[2]]
 
 def get_config_packages(input, recursive, packages):
     configs = get_package_files(input, recursive, 'packages.config')
@@ -101,13 +124,16 @@ def main():
     recursive = args.recursive
     no_ssl_verify = args.no_ssl_verify
     use_csv = args.csv
+
+    if not os.path.exists(input):
+        print("The supplied path does not exist: {}".format(input))
+        return
     
     req_session = requests.Session()
     
     if no_ssl_verify:
         req_session.verify = False
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
 
     #build a dictionary of CVEs
     cves = {}
@@ -160,26 +186,7 @@ def main():
     packages = {}
 
     if use_csv:
-        #process csv file to build packages list
-        with open(input, 'r') as csvfile:
-            csvreader = csv.reader(csvfile)
-
-            #Get column count, and also skip first row since it is header.
-            numcols = len(next(csvreader))
-
-            for row in csvreader:
-                if numcols == 2:
-                    #csv should be name,version
-                    key = row[0] + "@" + row[1]
-                    if key not in packages:
-                        packages[key] = ["n/a"]
-                else:
-                    #csv should be name,version,location
-                    key = row[0] + "@" + row[1]
-                    if key in packages:
-                        packages[key].append(row[2])
-                    else:
-                        packages[key] = [row[2]]
+        get_csv_packages(input, packages)
     else :
         get_config_packages(input, recursive, packages)
         get_csproj_packages(input, recursive, packages)
